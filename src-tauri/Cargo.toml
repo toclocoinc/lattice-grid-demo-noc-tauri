@@ -1,0 +1,30 @@
+[package]
+name = "lattice-noc"
+version = "0.1.0"
+description = "Lattice Grid network operations wall, with the data layer in Rust behind Tauri."
+authors = ["TOCLOCO Inc"]
+license = "MIT"
+edition = "2021"
+
+[lib]
+name = "lattice_noc_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3.34"
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

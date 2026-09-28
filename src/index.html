@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <title>Lattice NOC - Rust + Tauri</title>
+        <!-- The library and its modules, served from the app bundle: nothing is fetched at runtime. -->
+        <link rel="stylesheet" href="lattice/lattice-grid.min.css">
+        <script src="lattice/lattice-grid.min.js"></script>
+        <script src="lattice/modules/layout.min.js"></script>
+        <script src="lattice/modules/data-router.min.js"></script>
+        <script src="lattice/modules/charts.min.js"></script>
+        <script src="lattice/modules/chart-markermap.min.js"></script>
+        <script src="lattice/modules/geo-world-110m.min.js"></script>
+        <script src="lattice/modules/kpi.min.js"></script>
+        <script src="lattice/modules/alarms.min.js"></script>
+        <style>
+            html, body { height: 100%; }
+            body { padding: 0; margin: 0; background: #eef1f6; overflow: hidden; -webkit-user-select: none; user-select: none; }
+            #updates-body { display: flex; align-items: center; overflow: hidden; white-space: nowrap; font: 13px/1.4 system-ui, sans-serif; padding: 0 8px; }
+            .tick { display: inline-flex; align-items: center; gap: 8px; padding: 4px 18px; border-right: 1px solid #c9d1e0; }
+            .tick:last-child { border-right: 0; }
+            .tick .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+            .tick .dot.critical { background: #c02c38; } .tick .dot.warn { background: #b26a00; } .tick .dot.info { background: #1a7f37; }
+            .tick .at { font-weight: 700; color: #1b2a49; font-variant-numeric: tabular-nums; }
+            /* KPI tiles: square, filled by status, amber for warnings, sized to the window. */
+            .lat-kpi { --lat-kpi-warn: #f2a900; --lat-kpi-good: #1a7f37; --lat-kpi-critical: #cf222e; height: 100%; gap: 0; }
+            .lat-kpi .lat-kpi__tile { border: 0; border-radius: 0; height: 100%; box-sizing: border-box; justify-content: center; padding: 2px 14px; gap: 0; overflow: hidden; }
+            .lat-kpi .lat-kpi__value { font-size: 1.5em; line-height: 1.05; }
+            .lat-kpi .lat-kpi__label { font-size: .75em; }
+            .lat-kpi .lat-kpi__tile--good, .lat-kpi .lat-kpi__tile--warn, .lat-kpi .lat-kpi__tile--critical { border-left: 0; color: #fff; }
+            .lat-kpi .lat-kpi__tile--good { background: var(--lat-kpi-good) !important; }
+            .lat-kpi .lat-kpi__tile--warn { background: var(--lat-kpi-warn) !important; color: #1b1b1b; }
+            .lat-kpi .lat-kpi__tile--critical { background: var(--lat-kpi-critical) !important; }
+            .lat-kpi .lat-kpi__tile--good .lat-kpi__label, .lat-kpi .lat-kpi__tile--critical .lat-kpi__label { color: rgba(255,255,255,.85); }
+            .lat-kpi .lat-kpi__tile--warn .lat-kpi__label { color: rgba(0,0,0,.7); }
+            [data-lat-layout-body] { overflow: hidden; }
+            /* The branding window: the mark, the name, and the feed controls. */
+            #title-body { display: flex; align-items: center; gap: 12px; padding: 0 10px 0 14px; overflow: hidden; box-sizing: border-box; height: 100%; font-family: system-ui, sans-serif; }
+            #title-body img { width: 38px; height: 38px; flex: none; }
+            #title-body .brand { min-width: 0; overflow: hidden; }
+            #title-body .brand-name { font-size: 17px; font-weight: 700; color: #1b2a49; line-height: 1.2; white-space: nowrap; }
+            #title-body .brand-sub { font-size: 12px; color: #586069; white-space: nowrap; }
+            #title-body .brand-feed { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 12px; color: #1b2a49; white-space: nowrap; }
+            #title-body .brand-feed select, #title-body .brand-feed input { font: inherit; padding: 1px 4px; border: 1px solid #c9d1e0; border-radius: 4px; background: #fff; color: #1b2a49; }
+            #title-body .brand-feed input { width: 44px; text-align: right; }
+            #title-body .brand-feed button { font: inherit; padding: 1px 8px; border: 1px solid #1b4fa8; border-radius: 4px; background: #1b4fa8; color: #fff; cursor: pointer; }
+            #title-body .brand-feed button[disabled] { opacity: .5; cursor: default; }
+            #title-body .feed-state { display: inline-flex; align-items: center; gap: 5px; font-variant-numeric: tabular-nums; }
+            #title-body .feed-state .dot { width: 8px; height: 8px; border-radius: 50%; background: #9aa5b8; }
+            #title-body .feed-state.live .dot { background: #1a7f37; box-shadow: 0 0 0 3px rgba(26,127,55,.2); }
+            #title-body .feed-state.loading .dot { background: #f2a900; }
+            #title-body .feed-state.stopped .dot { background: #c02c38; }
+        </style>
+        <script src="noc-client.js"></script>
+    </head>
+    <body>
+        <div id="container" style="height: 100vh; margin: 0; padding: 0"></div>
+        <script>
+            const layout = LatticeGridLayout.createLayout(document.getElementById('container'), {
+                columns: 20, rows: 20, gap: 8, padding: 0,
+                overflowX: 'static', overflowY: 'static',
+                windows: [
+                    { id: 'title',  title: 'Lattice NOC demo', xPos: 1, yPos: 1, xSize: 4, ySize: 2, movable: false, resizable: false, closable: false },
+                    { id: 'kpi1',  title: 'Network availability', xPos: 5, yPos: 1, xSize: 2, ySize: 2, movable: false, resizable: false, closable: false },
+                    { id: 'kpi2',  title: 'Active incidents', xPos: 7, yPos: 1, xSize: 2, ySize: 2, movable: false, resizable: false, closable: false },
+                    { id: 'kpi3',  title: 'Degraded services', xPos: 9, yPos: 1, xSize: 2, ySize: 2, movable: false, resizable: false, closable: false },
+                    { id: 'kpi4',  title: 'Sites', xPos: 11, yPos: 1, xSize: 2, ySize: 2, movable: false, resizable: false, closable: false },
+                    { id: 'kpi5',  title: 'Core circuits', xPos: 13, yPos: 1, xSize: 2, ySize: 2, movable: false, resizable: false, closable: false },
+                    { id: 'kpi6',  title: 'Sites affected', xPos: 15, yPos: 1, xSize: 2, ySize: 2, movable: false, resizable: false, closable: false },
+                    { id: 'kpi7',  title: 'Time - LON', xPos: 17, yPos: 1, xSize: 2, ySize: 2, movable: false, resizable: false, closable: false },
+                    { id: 'kpi8',  title: 'Time - NY', xPos: 19, yPos: 1, xSize: 2, ySize: 2, movable: false, resizable: false, closable: false },
+
+                    { id: 'map',  title: 'Global network overview',  xPos: 1, yPos: 3, xSize: 6, ySize: 12, movable: true, resizable: true, maximisable: true  },
+                    { id: 'network',  title: 'Core network topology',  xPos: 7, yPos: 3, xSize: 6, ySize: 12, movable: true, resizable: true, maximisable: true  },
+                    { id: 'activeAlarms',  title: 'Active alarms (double-click to clear)',  xPos: 13, yPos: 3, xSize: 4, ySize: 12, movable: true, resizable: true, maximisable: true },
+                    { id: 'serviceHealth',  title: 'Service health',  xPos: 17, yPos: 3, xSize: 4, ySize: 12, movable: true, resizable: true, maximisable: true  },
+
+                    { id: 'networkTraffic',  title: 'Network traffic',  xPos: 1, yPos: 15, xSize: 4, ySize: 5, movable: true, resizable: true, maximisable: true  },
+                    { id: 'linkUtilisation',  title: 'Link utilisation',  xPos: 5, yPos: 15, xSize: 4, ySize: 5, movable: true, resizable: true },
+                    { id: 'incidentTrend',  title: 'Incident trend',  xPos: 9, yPos: 15, xSize: 4, ySize: 5, movable: true, resizable: true },
+                    { id: 'siteStatus',  title: 'Site status',  xPos: 13, yPos: 15, xSize: 4, ySize: 5, movable: true, resizable: true },
+                    { id: 'affectedCustomers',  title: 'Top affected sites',  xPos: 17, yPos: 15, xSize: 4, ySize: 5, movable: true, resizable: true },
+
+                    { id: 'updates',  title: 'Latest updates',  xPos: 1, yPos: 20, xSize: 20, ySize: 2, movable: false, resizable: false },
+                ],
+            });
+
+            // The data layer: the world is built and moved in Rust, behind Tauri. In 'live'
+            // Rust holds the RIS Live socket and reads PeeringDB and IODA itself.
+            const data = NocTauri.create({ mode: 'live', rate: 12 });   // create BEFORE any attach; 'live' falls back to the recording
+
+            // The branding window: the mark, the name, and the feed controls.
+            const feedState = document.createElement('span');
+            {
+                const brand = document.getElementById('title-body');
+                const mark = document.createElement('img'); mark.src = 'lattice-mark.svg'; mark.alt = 'Lattice Grid';
+                const text = document.createElement('div'); text.className = 'brand';
+                const name = document.createElement('div'); name.className = 'brand-name'; name.textContent = 'Network Operations Demo';
+                const sub = document.createElement('div'); sub.className = 'brand-sub'; sub.textContent = 'Rust engine · Tauri shell · Lattice Grid';
+                const feed = document.createElement('div'); feed.className = 'brand-feed';
+                const mode = document.createElement('select');
+                for (const [value, label] of [['live', 'Live'], ['recorded', 'Recorded'], ['simulated', 'Simulated']]) {
+                    const option = document.createElement('option'); option.value = value; option.textContent = label; mode.append(option);
+                }
+                const rate = document.createElement('input'); rate.type = 'number'; rate.min = '1'; rate.max = '200'; rate.value = '12'; rate.title = 'Routing events a second (recorded and simulated only)';
+                const perSecond = document.createElement('span'); perSecond.textContent = '/s';
+                const toggle = document.createElement('button'); toggle.textContent = 'Stop';
+                feedState.className = 'feed-state loading';
+                const dot = document.createElement('span'); dot.className = 'dot';
+                const stateText = document.createElement('span'); stateText.textContent = 'loading';
+                feedState.append(dot, stateText);
+                feed.append(mode, rate, perSecond, toggle, feedState);
+                text.append(name, sub, feed); brand.replaceChildren(mark, text);
+
+                mode.addEventListener('change', async () => { toggle.disabled = true; await data.restart({ mode: mode.value }); toggle.disabled = false; });
+                rate.addEventListener('change', () => data.setRate(Number(rate.value)));
+                toggle.addEventListener('click', async () => {
+                    toggle.disabled = true;
+                    if (data.status && data.status.state === 'stopped') await data.start(); else await data.stop();
+                    toggle.disabled = false;
+                });
+                data.on('status', (s) => {
+                    const live = s.state === 'connected' || s.state === 'replaying' || s.state === 'simulating';
+                    feedState.className = 'feed-state ' + (live ? 'live' : (s.state === 'stopped' || s.state === 'error') ? 'stopped' : 'loading');
+                    rate.disabled = s.mode === 'live' && s.state !== 'replaying';
+                    stateText.textContent = live ? `${s.ratePerMinute || 0}/min` : s.state;
+                    feedState.title = `${s.note || ''} ${s.messages || 0} messages, ${s.withdrawals || 0} withdrawals.`;
+                    toggle.textContent = s.state === 'stopped' ? 'Start' : 'Stop';
+                });
+            }
+
+            // The alarm grid, filtered down to just active alarms. Double-clicking a
+            // row asks Rust to clear it; the cleared row comes back on the next tick.
+            const alarmGrid = LatticeGrid.createGrid(document.getElementById('activeAlarms-body'), {
+                rowKey: 'id',
+                selection: 'none',
+                density: 'comfortable',
+                columns: [
+                    { field: 'severityLabel', title: 'Severity', headerControls: 'none', filter: { type: 'set' }, layout: { width: 90 }, cell: { decoration: 'pill', variant: { map: { Critical: 'danger', Major: 'warning', Minor: 'success' } }, }, },
+                    { field: 'since', title: 'Since', headerControls: 'none', type: 'datetime', layout: { width: 110 }, format: { pattern: 'dd/MM HH:mm' } },
+                    { field: 'country', title: 'Country', headerControls: 'none', filter: { type: 'set' }, layout: { width: 70 } },
+                    { field: 'description', title: 'Description', headerControls: 'none', layout: { flex: 1} },
+                    { field: 'status', layout: { hidden: true } },   // read by the Active filter below, never shown
+                ],
+            });
+            alarmGrid.filters.set({ col: 'status', op: 'eq', value: 'Active' });
+            alarmGrid.on('row:dblclicked', (e) => { if (e.key != null) data.clearAlarm(e.key); });
+
+            LatticeGridKPI.createKPI(document.getElementById('kpi7-body'), {
+                rows: [],
+                tiles: [{ kind: 'clock', id: 'london', label: 'London', timeZone: 'Europe/London', seconds: true }],
+            });
+            LatticeGridKPI.createKPI(document.getElementById('kpi8-body'), {
+                rows: [],
+                tiles: [{ kind: 'clock', id: 'newyork', label: 'New York', timeZone: 'America/New_York', seconds: true }],
+            });
+
+            // Device glyphs for the topology. A headless grid publishes no icon registry,
+            // so the circuits grid is a real grid in a hidden element, which does.
+            const deviceIcons = {
+                router:   { paint: 'stroke', viewBox: '0 0 16 16', paths: ['M2 7.5h12v5H2Z', 'M4.5 10h1.5', 'M7.5 10h1.5', 'M8 1.5v4', 'M5.5 3l2.5 2.5L10.5 3'] },
+                cloud:    { paint: 'stroke', viewBox: '0 0 16 16', paths: ['M4.5 12.5h7a3 3 0 0 0 .4-6A4 4 0 0 0 4.2 7.6a2.5 2.5 0 0 0 .3 4.9Z'] },
+                internet: { paint: 'stroke', viewBox: '0 0 16 16', paths: ['M8 1.5a6.5 6.5 0 1 0 0 13a6.5 6.5 0 1 0 0-13Z', 'M1.5 8h13', 'M8 1.5c-2.5 2-2.5 11 0 13', 'M8 1.5c2.5 2 2.5 11 0 13'] },
+                site:     { paint: 'stroke', viewBox: '0 0 16 16', paths: ['M2.5 14.5v-9l5.5-3.5l5.5 3.5v9Z', 'M6 14.5v-4h4v4', 'M2.5 14.5h11'] },
+            };
+            const linkHost = document.createElement('div'); linkHost.style.cssText = 'position:absolute;width:0;height:0;overflow:hidden';
+            document.body.appendChild(linkHost);
+            const linkGrid = LatticeGrid.createGrid(linkHost, {
+                icons: deviceIcons,
+                rowKey: 'id',
+                columns: [
+                    { field: 'from', title: 'From' },
+                    { field: 'to',   title: 'To' },
+                    { field: 'load', title: 'Load', type: 'number', format: { decimals: 0, suffix: '%' } },
+                ],
+                // The rules colour the line on the diagram and the cell in any table alike.
+                formatting: {
+                    load: [
+                        { id: 'quiet',     label: 'Within SLA',     when: { op: 'lt',  value: 40 }, style: { background: '#1a7f37', color: '#fff' } },
+                        { id: 'busy',      label: 'At risk',        when: { op: 'lt',  value: 80 }, style: { background: '#b26a00', color: '#fff' } },
+                        { id: 'saturated', label: 'SLA breached',   when: { op: 'gte', value: 80 }, style: { background: '#c02c38', color: '#fff' } },
+                    ],
+                },
+            });
+            data.router.attach(linkGrid, 'element');          // attach BEFORE start()
+
+            // The diagram in the 'network' window. Pin each device where a network
+            // team would draw it; the four cores are the four busiest cities.
+            LatticeGrid.createChart({
+                grid: linkGrid,
+                container: document.getElementById('network-body'),
+                type: 'network',
+                source: 'from', target: 'to',
+                y: { col: 'load', fn: 'sum' },
+                selection: true,
+                linkWidth: 2,
+                nodes: [
+                    { id: 'Internet',       label: 'Internet', icon: 'internet',       x: 0.50, y: 0.10 },
+                    { id: 'Cloud A',        label: 'Cloud A', icon: 'cloud',        x: 0.12, y: 0.22 },
+                    { id: 'Cloud B',        label: 'Cloud B', icon: 'cloud',        x: 0.88, y: 0.22 },
+                    { id: 'Amsterdam core', label: 'Amsterdam core', icon: 'router',  x: 0.30, y: 0.42 },
+                    { id: 'London core',    label: 'London core', icon: 'router',     x: 0.70, y: 0.42 },
+                    { id: 'Paris core',     label: 'Paris core', icon: 'router',      x: 0.30, y: 0.66 },
+                    { id: 'Frankfurt core', label: 'Frankfurt core', icon: 'router',  x: 0.70, y: 0.66 },
+                    { id: 'Region 1',       label: 'Region 1', icon: 'site',       x: 0.12, y: 0.90 },
+                    { id: 'Region 2',       label: 'Region 2', icon: 'site',       x: 0.88, y: 0.90 },
+                    { id: 'Region 3',       label: 'Region 3', icon: 'site',       x: 0.70, y: 0.90 },
+                    { id: 'Region 4',       label: 'Region 4', icon: 'site',       x: 0.30, y: 0.90 },
+                ],
+            });
+
+            // Sites for the world map: one row per building, lat/lon from Rust.
+            const siteGrid = LatticeGrid.createHeadlessGrid({
+                rowKey: 'id',
+                columns: [
+                    { field: 'name', title: 'Site' },
+                    { field: 'city', title: 'City' },
+                    { field: 'country', title: 'Country' },
+                    { field: 'lat', type: 'number', layout: { hidden: true } },
+                    { field: 'lon', type: 'number', layout: { hidden: true } },
+                    { field: 'status', layout: { hidden: true } },        // the donut groups by it
+                    { field: 'availability', title: 'Availability', type: 'number', format: { decimals: 2, suffix: '%' } },
+                    { field: 'alarms', title: 'Alarms', type: 'number' },
+                ],
+                formatting: {
+                    availability: [
+                        { id: 'met',      label: 'Within SLA',   when: { op: 'gte', value: 99.9 }, style: { background: '#1a7f37', color: '#fff' } },
+                        { id: 'watch',    label: 'At risk',      when: { op: 'gte', value: 99.5 }, style: { background: '#b26a00', color: '#fff' } },
+                        { id: 'breached', label: 'SLA breached', when: { op: 'lt',  value: 99.5 }, style: { background: '#c02c38', color: '#fff' } },
+                    ],
+                },
+            });
+            data.router.attach(siteGrid, 'site');             // attach BEFORE start()
+            LatticeGrid.createChart({
+                grid: siteGrid,
+                container: document.getElementById('map-body'),
+                type: 'markermap',
+                lon: 'lon', lat: 'lat', label: 'city', value: 'availability',
+                shapes: LatticeGridGeoWorld110m.pack,
+                selection: true,
+            });
+
+            // Network traffic over time: one five-minute reading per direction,
+            // 24 hours on start, then a new pair every five minutes from Rust.
+            const trafficGrid = LatticeGrid.createHeadlessGrid({
+                rowKey: 'id',
+                columns: [
+                    { field: 'at', title: 'Time', type: 'timestamp' },
+                    { field: 'direction', title: 'Direction' },
+                    { field: 'gbps', title: 'Gbps', type: 'number', format: { decimals: 1 } },
+                ],
+            });
+            data.router.attach(trafficGrid, 'sample');        // attach BEFORE start()
+            LatticeGrid.createChart({
+                grid: trafficGrid,
+                container: document.getElementById('networkTraffic-body'),
+                type: 'line',
+                x: 'at', y: 'gbps', series: 'direction',
+            });
+
+            // Link utilisation, top five: a derived grid over the circuits.
+            const topLinks = LatticeGrid.createHeadlessGrid({
+                rowKey: 'id',
+                source: { mode: 'derived', from: linkGrid, sort: [{ col: 'load', dir: 'desc' }], limit: 5 },
+                formatting: {
+                    load: [
+                        { id: 'quiet',     label: 'Within SLA',     when: { op: 'lt',  value: 40 }, style: { background: '#1a7f37', color: '#fff' } },
+                        { id: 'busy',      label: 'At risk',        when: { op: 'lt',  value: 80 }, style: { background: '#f2a900', color: '#1b1b1b' } },
+                        { id: 'saturated', label: 'SLA breached',   when: { op: 'gte', value: 80 }, style: { background: '#c02c38', color: '#fff' } },
+                    ],
+                },
+                columns: [
+                    { field: 'from', title: 'From' },
+                    { field: 'to', title: 'To' },
+                    { id: 'link', title: 'Link', value: { compute: (v) => `${v.from} ↔ ${v.to}`, deps: ['from', 'to'] } },
+                    { field: 'load', title: 'Load', type: 'number', format: { decimals: 0, suffix: '%' } },
+                ],
+            });
+            LatticeGrid.createChart({
+                grid: topLinks,
+                container: document.getElementById('linkUtilisation-body'),
+                type: 'horizontalBar',
+                x: 'link', y: 'load',
+                labels: true,
+            });
+
+            // Service health: the seven services, graded live off the alarms in Rust.
+            const slaRules = [
+                { id: 'met',      label: 'Within SLA',   when: { op: 'gte', value: 99.9 }, style: { color: '#1a7f37', fontWeight: '600' } },
+                { id: 'watch',    label: 'At risk',      when: { op: 'gte', value: 99.5 }, style: { color: '#c98a00', fontWeight: '600' } },
+                { id: 'breached', label: 'SLA breached', when: { op: 'lt',  value: 99.5 }, style: { color: '#c02c38', fontWeight: '600' } },
+            ];
+            const serviceHistory = new Map();
+            const SERVICE_ICONS = {
+                'Internet transit': 'external', 'MPLS VPN': 'link', 'Mobile backhaul': 'bolt', 'Voice and VoIP': 'share',
+                'Video transport': 'play', 'Enterprise ethernet': 'square', 'Cloud connect': 'chart',
+            };
+            const serviceGrid = LatticeGrid.createGrid(document.getElementById('serviceHealth-body'), {
+                rowKey: 'id', selection: 'none', density: 'comfortable',
+                formatting: { availability: slaRules },
+                columns: [
+                    { field: 'name', title: 'Service', headerControls: 'none', layout: { flex: 1 },
+                      cell: { render: 'icon', props: { name: SERVICE_ICONS } } },
+                    { field: 'status', title: 'Status', headerControls: 'none', layout: { width: 110 }, cell: { decoration: 'pill', variant: { map: { Operational: 'success', Degraded: 'warning', Impaired: 'danger', Offline: 'danger' } } } },
+                    { field: 'availability', title: 'Availability', headerControls: 'none', type: 'number', format: { decimals: 2, suffix: '%' }, layout: { width: 96 } },
+                    { id: 'trend', title: '', headerControls: 'none', layout: { width: 90 }, sort: { enabled: false }, filter: { enabled: false },
+                      value: { compute: (v) => serviceHistory.get(v.name) || [v.availability], deps: ['name', 'availability'] },
+                      cell: { render: 'line', props: { min: 99, max: 100 } } },
+                ],
+            });
+            serviceGrid.on('rows:changed', () => {
+                for (let i = 0; i < serviceGrid.rows.count(); i += 1) {
+                    const row = serviceGrid.rows.get(i);
+                    const name = serviceGrid.rows.value(row.key, 'name'), value = serviceGrid.rows.value(row.key, 'availability');
+                    const seen = serviceHistory.get(name) || [];
+                    if (seen[seen.length - 1] !== value) { seen.push(value); if (seen.length > 40) seen.shift(); serviceHistory.set(name, seen); }
+                }
+            });
+            data.router.attach(serviceGrid, 'service');       // attach BEFORE start()
+
+            // Alarms on service health: a service held below the SLA cut for two
+            // seconds raises an alarm; crossing back clears it.
+            const serviceAlarms = LatticeGridAlarms.createAlarms({ holdMs: 2000 });
+            serviceAlarms.attach(serviceGrid, {
+                sourceId: 'services',
+                columns: { availability: { thresholds: { warn: 99.9, critical: 99.5, direction: 'higherIsBetter' } } },
+            });
+
+            // Latest updates: a ticker of the newest alarms, newest first.
+            const ticker = [];
+            const hhmm = (ms) => new Date(ms).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+            const renderTicker = () => {
+                const feed = [];
+                for (let i = 0; i < alarmGrid.rows.count(); i += 1) {
+                    const row = alarmGrid.rows.get(i);
+                    const sev = String(alarmGrid.rows.value(row.key, 'severityLabel') || '').toLowerCase();
+                    feed.push({ at: Number(alarmGrid.rows.value(row.key, 'since')) || 0,
+                                tone: sev === 'critical' ? 'critical' : sev === 'major' ? 'warn' : 'info',
+                                text: `${alarmGrid.rows.value(row.key, 'description')} – ${alarmGrid.rows.value(row.key, 'site') || alarmGrid.rows.value(row.key, 'country') || ''}` });
+                }
+                const items = ticker.concat(feed).sort((a, b) => b.at - a.at).slice(0, 8);
+                const host = document.getElementById('updates-body');
+                host.replaceChildren(...items.map((it) => {
+                    const item = document.createElement('span'); item.className = 'tick';
+                    const dot = document.createElement('span'); dot.className = 'dot ' + (it.tone || 'info');
+                    const at = document.createElement('span'); at.className = 'at'; at.textContent = hhmm(it.at);
+                    const text = document.createElement('span'); text.textContent = it.text;
+                    item.append(dot, at, text);
+                    return item;
+                }));
+            };
+            serviceAlarms.on('alarm:raised', (e) => {
+                const name = serviceGrid.rows.value(e.key.split('/')[0], 'name');
+                ticker.unshift({ at: Date.now(), tone: e.level === 'critical' ? 'critical' : 'warn', text: `Service ${e.level === 'critical' ? 'SLA breached' : 'at risk'} – ${name}` });
+                renderTicker();
+            });
+            serviceAlarms.on('alarm:cleared', (e) => {
+                const name = serviceGrid.rows.value(e.key.split('/')[0], 'name');
+                ticker.unshift({ at: Date.now(), tone: 'info', text: `Service recovered – ${name}` });
+                renderTicker();
+            });
+            alarmGrid.on('rows:changed', renderTicker);
+            data.on('status', (s) => {
+                if (s.alert === 'major-incident') { ticker.unshift({ at: s.at, tone: 'critical', text: `Major incident: ${s.critical} critical alarms at once` }); renderTicker(); }
+            });
+
+            // Site status: a donut of sites by status.
+            const statusGrid = LatticeGrid.createHeadlessGrid({
+                rowKey: 'status',
+                source: { mode: 'derived', from: siteGrid, groupBy: 'status', select: { n: { fn: 'count' } } },
+                columns: [
+                    { field: 'status', title: 'Status' },
+                    { field: 'n', title: 'Sites', type: 'number' },
+                ],
+            });
+            LatticeGrid.createChart({
+                grid: statusGrid,
+                container: document.getElementById('siteStatus-body'),
+                type: 'donut', x: 'status', y: 'n',
+                scheme: { Operational: '#1a7f37', Degraded: '#f2a900', Offline: '#c02c38', Maintenance: '#6e7781' },
+                legend: { position: 'right', values: true },
+                centre: { value: 'total', label: 'sites' },
+            });
+
+            // Incident trend: alarms per minute, stacked by the severity raised with.
+            const trendGrid = LatticeGrid.createHeadlessGrid({
+                rowKey: 'id',
+                columns: [
+                    { field: 'since', type: 'timestamp' },
+                    { field: 'raisedSeverityLabel' },
+                    { id: 'minute', type: 'timestamp', value: { compute: (v) => Math.floor(v.since / 60000) * 60000, deps: ['since'] } },
+                ],
+            });
+            data.router.attach(trendGrid, 'alarm');           // attach BEFORE start()
+            LatticeGrid.createChart({
+                grid: trendGrid,
+                container: document.getElementById('incidentTrend-body'),
+                type: 'bar', x: 'minute', series: 'raisedSeverityLabel', y: { col: 'raisedSeverityLabel', fn: 'count' }, stack: true,
+                scheme: { Critical: '#c02c38', Major: '#f2a900', Minor: '#1a7f37' },
+            });
+
+            // Top affected: the five sites with the most active alarms.
+            LatticeGrid.createGrid(document.getElementById('affectedCustomers-body'), {
+                rowKey: 'site', selection: 'none', density: 'comfortable',
+                source: { mode: 'derived', from: alarmGrid, groupBy: 'site',
+                          select: { alarms: { fn: 'count' } },
+                          sort: [{ col: 'alarms', dir: 'desc' }], limit: 5 },
+                columns: [
+                    { field: 'site', title: 'Site', headerControls: 'none', layout: { flex: 1 } },
+                    { field: 'alarms', title: 'Active alarms', headerControls: 'none', type: 'number', layout: { width: 120 } },
+                ],
+            });
+
+            // The six KPI panels across the top. Each is a viewer of one route.
+            const kpiPanel = (id, route, tiles) => {
+                const panel = LatticeGridKPI.createKPI(document.getElementById(id + '-body'), { rowKey: 'id', columns: tiles.length, tiles });
+                data.router.attach(panel, route);                 // attach BEFORE start()
+                return panel;
+            };
+            kpiPanel('kpi1', 'site', [
+                { id: 'avail', label: 'Mean availability %', aggregation: 'avg', field: 'availability', format: { type: 'number', decimals: 3 },
+                  thresholds: { warn: 99.9, critical: 99.5, direction: 'higherIsBetter' } },
+            ]);
+            kpiPanel('kpi2', 'alarm', [
+                { id: 'active', label: 'Active incidents', aggregation: 'count', filter: (r) => r.status === 'Active',
+                  thresholds: { warn: 5, critical: 10, direction: 'lowerIsBetter' } },
+            ]);
+            kpiPanel('kpi3', 'service', [
+                { id: 'degraded', label: 'Services not operational', aggregation: 'count', filter: (r) => r.status !== 'Operational',
+                  thresholds: { warn: 1, critical: 3, direction: 'lowerIsBetter' } },
+            ]);
+            kpiPanel('kpi4', 'site', [
+                { id: 'sites', label: 'Sites', aggregation: 'count' },
+            ]);
+            kpiPanel('kpi5', 'element', [
+                { id: 'hot', label: 'Circuits over 80% load', aggregation: 'count', filter: (r) => r.load >= 80,
+                  thresholds: { warn: 1, critical: 3, direction: 'lowerIsBetter' } },
+            ]);
+            kpiPanel('kpi6', 'site', [
+                { id: 'affected', label: 'With active alarms', aggregation: 'count', filter: (r) => r.alarms > 0,
+                  thresholds: { warn: 5, critical: 20, direction: 'lowerIsBetter' } },
+            ]);
+
+            data.router.attach(alarmGrid, 'alarm');            // attach BEFORE start()
+            data.on('status', (s) => { console.info('[noc]', s.state, s.note); });
+            data.start().catch((error) => { console.error('[noc] the feed did not start', error); });
+        </script>
+    </body>
+</html>

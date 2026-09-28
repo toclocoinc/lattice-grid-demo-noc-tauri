@@ -1,0 +1,21 @@
+{
+  "name": "lattice-noc-tauri",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lattice Grid network operations wall, with the data layer in Rust behind Tauri.",
+  "license": "MIT",
+  "scripts": {
+    "prepare": "node scripts/vendor-grid.mjs",
+    "predev": "node scripts/vendor-grid.mjs",
+    "prebuild": "node scripts/vendor-grid.mjs",
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "dependencies": {
+    "@toclocoinc/lattice-grid": "1.76.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
