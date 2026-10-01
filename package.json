@@ -13,7 +13,7 @@
     "build": "tauri build"
   },
   "dependencies": {
-    "@toclocoinc/lattice-grid": "1.83.1"
+    "@toclocoinc/lattice-grid": "1.84.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"
